@@ -1,0 +1,13 @@
+node_modules/
+input/
+output/
+.env
+
+index_backup_12202024.js
+index_axios.js
+index_got.js
+tokenService.js
+accessToken.js
+
+input_backup_inCaseTheProcessCrash_12272024/
+finished/
