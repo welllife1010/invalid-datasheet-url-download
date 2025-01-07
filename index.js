@@ -1,7 +1,6 @@
 import got from "got";
 import fs from "fs";
 import path from "path";
-import { exec } from "child_process";
 import puppeteer from "puppeteer";
 import dotenv from "dotenv";
 import pLimit from "p-limit";
@@ -19,14 +18,13 @@ const USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 14_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
 ];
 
-// Utility Functions
 function validateInputFile(filePath) {
     if (!fs.existsSync(filePath) || !filePath.endsWith(".json")) {
         throw new Error(`Invalid file: ${filePath}`);
     }
 }
 
-// Utility Functions for State Management
+// State Management
 function loadState(stateFile) {
     if (fs.existsSync(stateFile)) {
         return JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -36,14 +34,6 @@ function loadState(stateFile) {
 
 function saveState(stateFile, state) {
     fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
-}
-
-// Save state periodically
-function autoSaveState(stateFile, state) {
-    setInterval(() => {
-        saveState(stateFile, state);
-        console.log(`State saved to ${stateFile}`);
-    }, 60000); // Every 1 minute
 }
 
 function appendToJsonFile(filePath, data) {
@@ -152,24 +142,36 @@ async function downloadWithPuppeteer(url, outputPath) {
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
 
+    // Set a custom download directory
+    const downloadDir = path.dirname(outputPath);
+    await page._client().send('Page.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: downloadDir,
+    });
+
     try {
-        console.log(`Using Puppeteer to download ${url}`);
-        await page.goto(url, { waitUntil: "networkidle2" });
+        console.log(`Using Puppeteer to download: ${url}`);
+        await page.goto(url, { waitUntil: 'networkidle2' });
 
-        const pdfBuffer = await page.evaluate(async () => {
-            const response = await fetch(document.location.href);
-            if (response.ok) {
-                return await response.arrayBuffer();
+        const downloadFileName = path.basename(outputPath);
+        const filePath = path.join(downloadDir, downloadFileName);
+
+        // Wait for the file to exist and fully download
+        let fileDownloaded = false;
+        let lastFileSize = 0;
+        while (!fileDownloaded) {
+            if (fs.existsSync(filePath)) {
+                const stats = fs.statSync(filePath);
+                if (stats.size > 0 && stats.size === lastFileSize) {
+                    fileDownloaded = true; // File size hasn't changed, download likely complete
+                } else {
+                    lastFileSize = stats.size; // Update the last file size
+                }
             }
-            throw new Error(`Fetch failed with status ${response.status}`);
-        });
-
-        if (pdfBuffer) {
-            fs.writeFileSync(outputPath, Buffer.from(pdfBuffer));
-            console.log(`Successfully downloaded ${path.basename(outputPath)} using Puppeteer`);
-        } else {
-            throw new Error("Failed to fetch PDF from rendered page.");
+            await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every second
         }
+
+        console.log(`Successfully downloaded: ${downloadFileName} using Puppeteer`);
     } catch (error) {
         console.error(`Puppeteer failed for ${url}: ${error.message}`);
         throw error;
@@ -179,18 +181,18 @@ async function downloadWithPuppeteer(url, outputPath) {
 }
 
 // Main Download Process
-async function downloadDatasheets(jsonData, outputFolder, stateFile) {
+async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonPath, categorySlug) {
     let state = loadState(stateFile);
-    const failedJsonPath = path.join(outputFolder, "failed.json");
-
-    if (!fs.existsSync(outputFolder)) {
-        fs.mkdirSync(outputFolder, { recursive: true });
-    }
-
     const limit = pLimit(MAX_CONCURRENCY);
+    let categoryFolderCreated = false; // Track if the output folder has been created
 
     const tasks = jsonData.slice(state.lastIndex).map((item, index) =>
         limit(async () => {
+            if (!categoryFolderCreated) {
+                fs.mkdirSync(outputFolder, { recursive: true }); // Create folder when first needed
+                categoryFolderCreated = true;
+            }
+            
             const taskIndex = state.lastIndex + index; // Calculate task index
             const datasheetName = `${item.title.replace(/\//g, "-")}.pdf`;
             const outputPath = path.join(outputFolder, datasheetName);
@@ -200,12 +202,7 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile) {
             let success = false;
 
             try {
-                let cookies = "";
-                try {
-                    cookies = await getCookies(item.url);
-                } catch (cookieError) {
-                    console.error(`Failed to retrieve cookies: ${cookieError.message}`);
-                }
+                const cookies = await getCookies(item.url);
 
                 for (const userAgent of USER_AGENTS) {
                     try {
@@ -256,7 +253,6 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile) {
                 });
             } 
 
-            if (!success) console.log(`Skipping failed instance: ${item.url}`);
             state.lastIndex = taskIndex + 1;
 
             // Save state after each task
@@ -266,7 +262,7 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile) {
     );
 
     await Promise.all(tasks);
-    console.log("All datasheets processed.");
+    console.log(`All datasheets processed for this category – ${categorySlug}.`);
 }
 
 // Main Script
@@ -279,7 +275,9 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile) {
         fs.mkdirSync(finishedFolder, { recursive: true });
     }
 
-    const inputFiles = fs.readdirSync(inputFolder).filter(file => file.startsWith("invalid_datasheet_urls_"));
+    const inputFiles = fs.readdirSync(inputFolder)
+        .filter(file => file.startsWith("invalid_datasheet_urls_"))
+        .sort(); // Ensures consistent order;
 
     for (const inputFile of inputFiles) {
         const categorySlug = inputFile.match(/invalid_datasheet_urls_(.+)\.json/)[1];
@@ -287,24 +285,21 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile) {
         const finishedPath = path.join(finishedFolder, inputFile);
         const stateFile = path.join(outputFolder, `state_${categorySlug}.json`);
         const categoryOutputFolder = path.join(outputFolder, `datasheet_${categorySlug}`);
+        const failedJsonPath = path.join(outputFolder, `failed_${categorySlug}.json`);
 
-        if (!fs.existsSync(categoryOutputFolder)) fs.mkdirSync(categoryOutputFolder, { recursive: true });
+        // if (!fs.existsSync(categoryOutputFolder)) fs.mkdirSync(categoryOutputFolder, { recursive: true });
 
         try {
             validateInputFile(fullPath);
-            console.log("Loading file:", fullPath);
+            console.log("Processing file:", fullPath);
 
             const jsonData = JSON.parse(fs.readFileSync(fullPath, "utf8"));
-            const state = loadState(stateFile); // Properly load state here
 
-            //autoSaveState(stateFile, loadState(stateFile));
-            autoSaveState(stateFile, state); 
-
-            await downloadDatasheets(jsonData, categoryOutputFolder, stateFile);
+            await downloadDatasheets(jsonData, categoryOutputFolder, stateFile, failedJsonPath, categorySlug);
             fs.renameSync(fullPath, finishedPath);
-            console.log(`File moved to finished folder: ${finishedPath}`);
+            console.log(`Moved processed file to: ${finishedPath}`);
         } catch (error) {
-            console.error(`Failed to process file: ${fullPath}`, error);
+            console.error(`Error processing file ${inputFile}: ${error.message}`);
         }
     }
 })();
