@@ -123,11 +123,21 @@ async function downloadWithGot(url, outputPath, userAgent, cookies = "") {
             if (error.response && error.response.statusCode === 503) {
                 console.error(`503 Service Unavailable for ${url} (Attempt ${attempt})`);
                 if (attempt < RETRY_LIMIT) {
-                    const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+                    const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500; // Add jitter - Exponential backoff
+
                     console.log(`Retrying after ${delay}ms...`);
                     await new Promise((resolve) => setTimeout(resolve, delay));
                 } else {
                     throw new Error("503 Service Unavailable (Max retries reached)");
+                }
+            } else if(error.response && error.response.statusCode === 429) {
+                console.log(`429 Too Many Requests for ${url} (Attempt ${attempt})`);
+                if (attempt < RETRY_LIMIT) {
+                    const delay = Math.pow(2, attempt) * 2000; // Exponential backoff
+                    console.log(`Retrying after ${delay}ms due to 429...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } else {
+                    throw new Error("429 Too Many Requests (Max retries reached)");
                 }
             } else {
                 console.error(`Got attempt ${attempt} failed for ${url}: ${error.message}`);
