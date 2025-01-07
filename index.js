@@ -183,6 +183,13 @@ async function downloadWithPuppeteer(url, outputPath) {
 // Main Download Process
 async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonPath, categorySlug) {
     let state = loadState(stateFile);
+
+    // Initialize totalTasks if it's not already in the state
+    if (!state.totalTasks) {
+        state.totalTasks = jsonData.length;
+        saveState(stateFile, state); // Save initial state with totalTasks
+    }
+
     const limit = pLimit(MAX_CONCURRENCY);
     let categoryFolderCreated = false; // Track if the output folder has been created
 
@@ -311,5 +318,5 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonP
     } else {
         console.log("Some files remain unprocessed. Please check for errors.");
     }
-    
+
 })();
