@@ -192,7 +192,7 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonP
                 fs.mkdirSync(outputFolder, { recursive: true }); // Create folder when first needed
                 categoryFolderCreated = true;
             }
-            
+
             const taskIndex = state.lastIndex + index; // Calculate task index
             const datasheetName = `${item.title.replace(/\//g, "-")}.pdf`;
             const outputPath = path.join(outputFolder, datasheetName);
@@ -302,4 +302,14 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonP
             console.error(`Error processing file ${inputFile}: ${error.message}`);
         }
     }
+
+    // Check if all files have been moved to the finished folder
+    const remainingFiles = fs.readdirSync(inputFolder).filter(file => file.startsWith("invalid_datasheet_urls_"));
+    if (remainingFiles.length === 0) {
+        console.log("All files have been processed. Exiting.");
+        process.exit(0); // Gracefully exit if everything is done
+    } else {
+        console.log("Some files remain unprocessed. Please check for errors.");
+    }
+    
 })();
