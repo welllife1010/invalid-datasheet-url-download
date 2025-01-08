@@ -33,7 +33,12 @@ function loadState(stateFile) {
 }
 
 function saveState(stateFile, state) {
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
+    const orderedState = {
+        lastIndex: state.lastIndex,
+        totalTasks: state.totalTasks,
+        tasks: state.tasks
+    };
+    fs.writeFileSync(stateFile, JSON.stringify(orderedState, null, 2), "utf8");
 }
 
 function appendToJsonFile(filePath, data) {
@@ -184,16 +189,24 @@ async function downloadWithPuppeteer(url, outputPath) {
 async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonPath, categorySlug) {
     let state = loadState(stateFile);
 
-    // Initialize totalTasks if it's not already in the state
-    if (!state.totalTasks) {
+    // Ensure totalTasks is correct and reset lastIndex if needed
+    if (!state.totalTasks || state.totalTasks !== jsonData.length) {
+        console.warn(`Warning: totalTasks mismatch. Resetting lastIndex to 0.`);
         state.totalTasks = jsonData.length;
-        saveState(stateFile, state); // Save initial state with totalTasks
+        state.lastIndex = 0;
+        saveState(stateFile, state);
+    }
+
+    // Check if all tasks are already completed
+    if (state.lastIndex >= state.totalTasks) {
+        console.log(`All tasks for category ${categorySlug} have already been processed.`);
+        return; // Exit early if everything has been processed
     }
 
     const limit = pLimit(MAX_CONCURRENCY);
     let categoryFolderCreated = false; // Track if the output folder has been created
 
-    const tasks = jsonData.slice(state.lastIndex).map((item, index) =>
+    const tasks = jsonData.slice(state.lastIndex, state.totalTasks).map((item, index) =>
         limit(async () => {
             if (!categoryFolderCreated) {
                 fs.mkdirSync(outputFolder, { recursive: true }); // Create folder when first needed
@@ -204,7 +217,7 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonP
             const datasheetName = `${item.title.replace(/\//g, "-")}.pdf`;
             const outputPath = path.join(outputFolder, datasheetName);
 
-            console.log(`Processing task ${taskIndex}: ${datasheetName} from ${item.url}`);
+            console.log(`Processing task ${taskIndex + 1} / ${state.totalTasks}: ${datasheetName}`);
 
             let success = false;
 
@@ -260,9 +273,16 @@ async function downloadDatasheets(jsonData, outputFolder, stateFile, failedJsonP
                 });
             } 
 
-            state.lastIndex = taskIndex + 1;
+            // Locking mechanism to safely update lastIndex
+            while (isUpdatingLastIndex) {
+                await new Promise(resolve => setTimeout(resolve, 10)); // Wait if another task is updating lastIndex
+            }
 
-            // Save state after each task
+            isUpdatingLastIndex = true; // Acquire lock
+            state.lastIndex = Math.min(state.lastIndex + 1, state.totalTasks); // Safely update lastIndex
+            isUpdatingLastIndex = false; // Release lock
+
+            // Save state after each task with updated progress
             saveState(stateFile, state);
             
         })
